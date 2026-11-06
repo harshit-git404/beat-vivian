@@ -156,6 +156,7 @@ details[open] summary { margin-bottom: 8px; }
       <div class="picker" id="picker"></div>
     </div>
     <button class="primary" id="playBtn">Play</button>
+    <button class="secondary" id="resetLvlBtn" hidden>Start over from Level 1</button>
     <details id="howTo">
       <summary>How to play</summary>
       <div class="bricks">
@@ -233,6 +234,7 @@ details[open] summary { margin-bottom: 8px; }
   const BODY = '"Nunito", ui-rounded, system-ui, sans-serif';
   const EMOJI_FONT = '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
   const COLS = 8, START_LIVES = 3, MAX_LIVES = 5, MAX_BALLS = 8, DROP_CHANCE = 0.14;
+  const CONTINUE_FROM_LAST_LEVEL = true; // when true, failing continues from the last level reached instead of restarting from level 1
   const POWERS = {
     wide:   { icon: "↔️", dur: 14, w: 3 },
     multi:  { icon: "✨", w: 3 },
@@ -295,7 +297,10 @@ details[open] summary { margin-bottom: 8px; }
   let brickGeom = { x0: 0, y0: 0, w: 0, h: 10, gap: 4 };
   let state = "menu"; // menu | play | paused | clear | over
   let pausedFrom = "play";
-  let score = 0, level = 1, lives = START_LIVES, combo = 0, bestCombo = 0, bricksBroken = 0, lastScore = 0, savedThisRound = false;
+  let score = 0, level = CONTINUE_FROM_LAST_LEVEL ? Math.max(1, parseInt(store.get("lastLevel", 1), 10) || 1) : 1;
+  let levelStartScore = CONTINUE_FROM_LAST_LEVEL ? Math.max(0, parseInt(store.get("levelStartScore", 0), 10) || 0) : 0;
+  let levelStartBricks = CONTINUE_FROM_LAST_LEVEL ? Math.max(0, parseInt(store.get("levelStartBricks", 0), 10) || 0) : 0;
+  let lives = START_LIVES, combo = 0, bestCombo = 0, bricksBroken = levelStartBricks, lastScore = 0, savedThisRound = false;
   let ambientT = 10, levelSub = "", clearLine = "";
   let sinceBreak = 0, ramp = 1, serveTimer = 0, clearTimer = 0, bannerTimer = 0, laserCD = 0, shake = 0;
   const P = { x: 0, target: 0, w: 110, base: 110, h: 14, y: 0 };
@@ -409,9 +414,18 @@ details[open] summary { margin-bottom: 8px; }
   }
 
   // ================= Game flow =================
-  function newGame() {
+  function newGame(continueLast = CONTINUE_FROM_LAST_LEVEL) {
     unlockAudio(); keepAwake(true); Music.start();
-    score = 0; level = 1; lives = START_LIVES; combo = 0; bestCombo = 0; bricksBroken = 0; savedThisRound = false;
+    if (continueLast && CONTINUE_FROM_LAST_LEVEL) {
+      level = Math.max(1, parseInt(store.get("lastLevel", level || 1), 10) || 1);
+      score = Math.max(0, parseInt(store.get("levelStartScore", levelStartScore || 0), 10) || 0);
+      bricksBroken = Math.max(0, parseInt(store.get("levelStartBricks", levelStartBricks || 0), 10) || 0);
+    } else {
+      score = 0; level = 1; bricksBroken = 0;
+      levelStartScore = 0; levelStartBricks = 0;
+      store.set("lastLevel", 1); store.set("levelStartScore", 0); store.set("levelStartBricks", 0);
+    }
+    lives = START_LIVES; combo = 0; bestCombo = 0; savedThisRound = false;
     parts = []; pops = []; ambientT = 10;
     startLevel();
     state = "play"; show(null);
@@ -468,6 +482,11 @@ details[open] summary { margin-bottom: 8px; }
     state = "over"; lastScore = score; keepAwake(false); balls = [];
     const isBest = !practice && score > best;
     if (isBest) { best = score; bestLevel = level; store.set("best", best); store.set("bestLevel", bestLevel); Cloud.push(best, bestLevel); }
+    if (CONTINUE_FROM_LAST_LEVEL) {
+      store.set("lastLevel", level);
+      store.set("levelStartScore", levelStartScore);
+      store.set("levelStartBricks", levelStartBricks);
+    }
     setTimeout(() => {
       if (state !== "over") return;
       $("overScore").textContent = fmt(score);
@@ -481,6 +500,7 @@ details[open] summary { margin-bottom: 8px; }
       const q = $("overMsg"); q.textContent = line;
       const sig = document.createElement("span"); sig.textContent = "Vivian of Venice"; q.appendChild(sig);
       renderHof("hofOver");
+      $("againBtn").textContent = CONTINUE_FROM_LAST_LEVEL ? `Try Level ${level} again` : "Play again";
       show("over");
     }, 700);
   }
@@ -587,7 +607,15 @@ details[open] summary { margin-bottom: 8px; }
       li.append(em, nm, sc); ol.appendChild(li);
     }
   }
-  function toMenu() { state = "menu"; keepAwake(false); level = 1; for (const k in active) delete active[k]; drops = []; bullets = []; makeLevel(1); serve(); refreshMenu(); show("start"); }
+  function toMenu() {
+    state = "menu"; keepAwake(false);
+    for (const k in active) delete active[k];
+    drops = []; bullets = [];
+    if (!CONTINUE_FROM_LAST_LEVEL) {
+      level = 1; score = 0; levelStartScore = 0; levelStartBricks = 0;
+    }
+    makeLevel(level); serve(); refreshMenu(); show("start");
+  }
 
   // ================= Power-ups =================
   function pickPower() {
@@ -663,7 +691,22 @@ details[open] summary { margin-bottom: 8px; }
     for (const b of balls) b.squash = Math.max(0, b.squash - dt * 6);
     const ptop = P.y - P.h / 2;
 
-    if (state === "clear") { clearTimer -= dt; if (clearTimer <= 0) { level++; startLevel(); state = "play"; } return; }
+    if (state === "clear") {
+      clearTimer -= dt;
+      if (clearTimer <= 0) {
+        level++;
+        if (CONTINUE_FROM_LAST_LEVEL) {
+          levelStartScore = score;
+          levelStartBricks = bricksBroken;
+          store.set("lastLevel", level);
+          store.set("levelStartScore", levelStartScore);
+          store.set("levelStartBricks", levelStartBricks);
+        }
+        startLevel();
+        state = "play";
+      }
+      return;
+    }
     if (state !== "play") { for (const b of balls) if (b.stuck) { b.x = P.x + b.off; b.y = ptop - R; } return; }
     bannerTimer = Math.max(0, bannerTimer - dt);
 
@@ -1052,18 +1095,36 @@ details[open] summary { margin-bottom: 8px; }
       p.appendChild(btn);
     }
   }
-  function refreshMenu() { renderHof("hofStart"); $("startLead").textContent = pickLine(START_LINES); }
-  $("playBtn").onclick = newGame;
-  $("againBtn").onclick = newGame;
+  function refreshMenu() {
+    renderHof("hofStart");
+    $("startLead").textContent = pickLine(START_LINES);
+    if ($("playBtn")) {
+      $("playBtn").textContent = (CONTINUE_FROM_LAST_LEVEL && level > 1) ? `Continue (Level ${level})` : "Play";
+    }
+    if ($("resetLvlBtn")) {
+      $("resetLvlBtn").hidden = !(CONTINUE_FROM_LAST_LEVEL && level > 1);
+    }
+  }
+  $("playBtn").onclick = () => newGame(CONTINUE_FROM_LAST_LEVEL);
+  $("againBtn").onclick = () => newGame(CONTINUE_FROM_LAST_LEVEL);
   $("menuBtn").onclick = toMenu;
   $("pauseBtn").onclick = pause;
   $("resumeBtn").onclick = resume;
-  $("restartBtn").onclick = newGame;
+  $("restartBtn").onclick = () => newGame(CONTINUE_FROM_LAST_LEVEL);
   $("quitBtn").onclick = toMenu;
+  const resetBtn = $("resetLvlBtn");
+  if (resetBtn) {
+    resetBtn.onclick = () => {
+      unlockAudio();
+      level = 1; score = 0; levelStartScore = 0; levelStartBricks = 0;
+      store.set("lastLevel", 1); store.set("levelStartScore", 0); store.set("levelStartBricks", 0);
+      makeLevel(1); serve(); refreshMenu(); blip(440, .08);
+    };
+  }
 
   // ================= Boot =================
   applyTheme(); buildPicker(); syncSound(); syncMusic(); syncMute(); syncSong(); refreshMenu();
-  layout(); makeLevel(1); serve();
+  layout(); makeLevel(level); serve();
   requestAnimationFrame((t) => { last = t; frame(t); });
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { layout(); spriteKey = ""; });
   Cloud.pull().then((j) => {
@@ -1071,7 +1132,10 @@ details[open] summary { margin-bottom: 8px; }
     const sb = Math.floor(Number(j.best) || 0), sl = Math.floor(Number(j.level) || 0);
     if (j.epoch && j.epoch !== store.get("epoch", null)) {
       // The score was reset on the site: drop whatever this phone remembered.
-      store.set("epoch", j.epoch); best = sb; bestLevel = sl; store.set("best", best); store.set("bestLevel", bestLevel); refreshMenu(); return;
+      store.set("epoch", j.epoch); best = sb; bestLevel = sl; store.set("best", best); store.set("bestLevel", bestLevel);
+      store.set("lastLevel", 1); store.set("levelStartScore", 0); store.set("levelStartBricks", 0);
+      level = 1; score = 0; levelStartScore = 0; levelStartBricks = 0;
+      refreshMenu(); return;
     }
     if (sb > best) { best = sb; bestLevel = sl; store.set("best", best); store.set("bestLevel", bestLevel); refreshMenu(); }
     else if (best > sb) Cloud.push(best, bestLevel);
